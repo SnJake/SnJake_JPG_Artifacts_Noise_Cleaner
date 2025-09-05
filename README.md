@@ -17,6 +17,7 @@ This project is a personal experiment created out of curiosity. The main part of
 
 <img width="1536" height="768" alt="Example 1" src="https://github.com/user-attachments/assets/1aea77af-b71a-433c-bdf2-6f0fb8fb297c" />
 <img width="1024" height="512" alt="Example 2" src="https://github.com/user-attachments/assets/a406e9f2-0c52-4892-94f8-d0207aae6981" />
+<img width="396" height="193" alt="Example 3" src="https://github.com/user-attachments/assets/9bf706fb-0475-413e-a8e7-10cf2eda1a76" />
 
 ---
 
