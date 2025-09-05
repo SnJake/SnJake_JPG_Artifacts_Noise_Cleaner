@@ -64,8 +64,8 @@ The node can be found in the "Add Node" menu under **`😎 SnJake/JPG & Noise Re
 *   **`weights_name`**: A dropdown list to select the model weights file from the `models/artifacts_remover` folder.
 *   **`weights_path`**: (Optional) A direct path to the weights file if it is located elsewhere.
 *   **`base_ch`**: The number of base channels in the model. **This must match the model it was trained with (default is 64)**.
-*   **`tile`**: The tile size for processing large images. This helps prevent VRAM shortages. A value of `0` disables tiling. Recommended value: `512`.
-*   **`overlap`**: The overlap area between tiles for smoother blending. Recommended value: `64`.
+*   **`tile`**: The tile size for processing large images. This helps prevent VRAM shortages. A value of `0` disables tiling. Recommended value: `256-512`.
+*   **`overlap`**: The overlap area between tiles for smoother blending. Recommended value: `64-128`.
 *   **`edge_aware_window`**: Use a smart blending window that avoids darkening the edges of the image where there are no adjacent tiles. It is recommended to keep this enabled (`True`).
 *   **`blend`**: A factor to blend the result with the original image (from 0.0 to 1.0). Small values (e.g., `0.1`-`0.2`) can help restore very fine details if the model has over-smoothed them. `0.0` means the effect is fully applied.
 *   **`amp_dtype`**: The precision for computations (for CUDA). `auto` is the optimal choice.
