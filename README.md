@@ -75,4 +75,4 @@ The node can be found in the "Add Node" menu under **`😎 SnJake/JPG & Noise Re
 
 ## 📜 License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the [[LICENSE](LICENSE)](https://github.com/SnJake/JPG-Artifacts-Noise-Cleaner/blob/main/LICENSE.md) file for details.
