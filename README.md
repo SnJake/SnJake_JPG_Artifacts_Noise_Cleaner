@@ -40,7 +40,7 @@ The installation consists of two steps: installing the node itself and downloadi
 
 3.  Clone this repository:
     ```bash
-    git clone https://github.com/SnJake/SnJakeArtifactsRemover.git
+    git clone https://github.com/SnJake/SnJake_JPG_Artifacts_Noise_Cleaner.git
     ```
 
 ### Step 2: Install the Model Weights
