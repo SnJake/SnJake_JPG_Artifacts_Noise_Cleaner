@@ -6,9 +6,6 @@
 
 This is a custom node for ComfyUI designed to remove JPEG compression artifacts and digital noise from images. It is powered by a lightweight `UNetRestorer` model that efficiently restores image quality.
 
-![Node Preview](https://i.imgur.com/your-preview-image.png)
-*(It is recommended to replace this link with a GIF demonstrating the node's before/after effect)*
-
 ---
 
 # About this project
@@ -41,7 +38,7 @@ The installation consists of two steps: installing the node itself and downloadi
 
 1.  Navigate to your `ComfyUI/models/` directory.
 2.  Create a folder named `artifacts_remover` inside it, if it doesn't already exist.
-3.  Download the model weights file (`.pt` or `.safetensors`) from the **[Hugging Face page (your link here)]()**.
+3.  Download the model weights file (`.pt` or `.safetensors`) from the **[Hugging Face page](https://huggingface.co/SnJake/JPG_Noise_Remover)]**.
 4.  Place the downloaded weights file into the `ComfyUI/models/artifacts_remover/` directory.
 
 ### Step 3: Restart
@@ -75,4 +72,4 @@ The node can be found in the "Add Node" menu under **`😎 SnJake/JPG & Noise Re
 
 ## 📜 License
 
-This project is licensed under the MIT License. See the [[LICENSE](https://github.com/SnJake/JPG-Artifacts-Noise-Cleaner/blob/main/LICENSE.md) file for details.
+This project is licensed under the MIT License. See the [LICENSE](https://github.com/SnJake/JPG-Artifacts-Noise-Cleaner/blob/main/LICENSE.md) file for details.
