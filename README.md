@@ -13,8 +13,6 @@ This project is a personal experiment created out of curiosity. The main part of
 
 ---
 
----
-
 # Examples
 
 <img width="1536" height="768" alt="Example 1" src="https://github.com/user-attachments/assets/1aea77af-b71a-433c-bdf2-6f0fb8fb297c" />
