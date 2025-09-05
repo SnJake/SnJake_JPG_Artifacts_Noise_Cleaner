@@ -77,6 +77,10 @@ The node can be found in the "Add Node" menu under **`😎 SnJake/JPG & Noise Re
 
 ---
 
+Training code is included in /training_code for reference, but the main purpose of this repo is the ComfyUI node and pre-trained weights.
+
+---
+
 ## 📜 License
 
 This project is licensed under the MIT License. See the [LICENSE](https://github.com/SnJake/JPG-Artifacts-Noise-Cleaner/blob/main/LICENSE.md) file for details.
