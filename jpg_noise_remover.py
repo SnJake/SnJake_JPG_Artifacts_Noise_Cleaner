@@ -1,7 +1,3 @@
-# SnJakeArtifactsRemover — ComfyUI node for JPEG/noise artifacts removal
-# Author: SnJake; Model: lightweight UNetRestorer
-# Drop this folder into: ComfyUI/custom_nodes/SnJakeArtifactsRemover
-# Weights default dir: ComfyUI/models/artifacts_remover
 import os
 import math
 from typing import Tuple, Dict, List
@@ -404,4 +400,5 @@ class SnJakeArtifactsRemover:
 
         result = torch.cat(out_list, dim=0)
         result = result.clamp(0, 1).to(image.dtype)
+
         return (result,)
