@@ -49,7 +49,7 @@ The installation consists of two steps: installing the node itself and downloadi
         1.  Make sure your ComfyUI virtual environment (`venv`) is activated.
         2.  Navigate into the new node directory and install the requirements:
             ```bash
-            cd SnJakeNodes
+            cd SnJake_JPG_Artifacts_Noise_Cleaner
             pip install -r requirements.txt
             ```
 
