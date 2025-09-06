@@ -389,9 +389,9 @@ class SnJakeArtifactsRemover:
 
             # Если выбранная модель не найдена локально, скачиваем её
             if not os.path.isfile(model_path):
-                print(f"[SnJakeArtifactsRemover] Модель '{weights_name}' не найдена. Попытка скачивания с Hugging Face...")
+                print(f"[SnJakeArtifactsRemover] Model '{weights_name}' not found. Trying to download from Hugging Face...")
                 if hf_hub_download is None:
-                    raise ImportError("huggingface_hub не установлен. Пожалуйста, установите его для автоматического скачивания моделей: pip install huggingface_hub")
+                    raise ImportError("huggingface_hub is not installed. Please install it to download models automatically: pip install huggingface_hub")
                 try:
                     hf_hub_download(
                         repo_id=_HF_REPO_ID,
@@ -399,9 +399,9 @@ class SnJakeArtifactsRemover:
                         local_dir=root,
                         local_dir_use_symlinks=False,
                     )
-                    print(f"[SnJakeArtifactsRemover] Скачивание завершено: {weights_name}")
+                    print(f"[SnJakeArtifactsRemover] Download complete: {weights_name}")
                 except Exception as e:
-                    raise FileNotFoundError(f"Не удалось скачать '{weights_name}' с Hugging Face. Ошибка: {e}")
+                    raise FileNotFoundError(f"Failed to download '{weights_name}' с Hugging Face. Error: {e}")
             
             # Теперь файл должен существовать
             if os.path.isfile(model_path):
@@ -412,7 +412,7 @@ class SnJakeArtifactsRemover:
             return weights_path
 
         # Ошибка, если ничего не найдено
-        raise FileNotFoundError(f"Файл весов не найден. Проверено имя='{weights_name}' и путь='{weights_path}'")
+        raise FileNotFoundError(f"Model weights not found. Name checked='{weights_name}' and path='{weights_path}'")
     
     def apply(self, image, weights_name, weights_path, base_ch, tile, overlap, edge_aware_window, blend, amp_dtype, device):
         if device == "auto":
@@ -427,7 +427,7 @@ class SnJakeArtifactsRemover:
 
         b, h, w, c = image.shape
         if c != 3:
-            raise ValueError("Поддерживаются только 3-канальные RGB изображения")
+            raise ValueError("Only 3-channel RGB images are supported.")
 
         out_list = []
         for i in range(b):
@@ -445,3 +445,4 @@ class SnJakeArtifactsRemover:
         result = result.clamp(0, 1).to(image.dtype)
 
         return (result,)
+
