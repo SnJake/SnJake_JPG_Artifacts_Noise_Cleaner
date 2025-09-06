@@ -29,21 +29,38 @@ The installation consists of two steps: installing the node itself and downloadi
 ### Step 1: Install the Node
 
 1.  Open a terminal or command prompt.
-2.  Navigate to the `custom_nodes` directory of your ComfyUI installation.
+2.  Navigate to your ComfyUI `custom_nodes` directory.
     ```bash
     # Example for Windows
     cd D:\ComfyUI\custom_nodes\
     
-    # Example for Linux/macOS
+    # Example for Linux
     cd ~/ComfyUI/custom_nodes/
     ```
 
-3.  Clone this repository:
+3.  Clone this repository into the `custom_nodes` folder:
     ```bash
-    git clone https://github.com/SnJake/SnJake_JPG_Artifacts_Noise_Cleaner.git
+    git clone https://github.com/SnJake/SnJakeNodes.git
     ```
 
-### Step 2: Install the Model Weights
+4.  **Install Dependencies**: Now, you need to install the required Python packages. The command depends on which version of ComfyUI you are using.
+
+    *   **For standard ComfyUI installations (with venv):**
+        1.  Make sure your ComfyUI virtual environment (`venv`) is activated.
+        2.  Navigate into the new node directory and install the requirements:
+            ```bash
+            cd SnJakeNodes
+            pip install -r requirements.txt
+            ```
+
+    *   **For Portable ComfyUI installations:**
+        1.  Navigate back to the **root** of your portable ComfyUI directory (e.g., `D:\ComfyUI_windows_portable`).
+        2.  Run the following command to use the embedded Python to install the requirements. *Do not activate any venv.*
+            ```bash
+            python_embeded\python.exe -m pip install -r ComfyUI\custom_nodes\SnJakeNodes\requirements.txt
+            ```
+
+### Step 2: Install the Model Weights (Or you can skip this step, the node will download the model weights itself)
 
 1.  Navigate to your `ComfyUI/models/` directory.
 2.  Create a folder named `artifacts_remover` inside it, if it doesn't already exist.
