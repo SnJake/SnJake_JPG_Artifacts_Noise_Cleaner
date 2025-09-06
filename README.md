@@ -60,7 +60,7 @@ The installation consists of two steps: installing the node itself and downloadi
             python_embeded\python.exe -m pip install -r ComfyUI\custom_nodes\SnJake_JPG_Artifacts_Noise_Cleaner\requirements.txt
             ```
 
-### Step 2: Install the Model Weights (Or you can skip this step, the node will download the model weights itself)
+### Step 2: Install the Model Weights (Or you can skip this step, the node will download the model weights itself after starting the Queue)
 
 1.  Navigate to your `ComfyUI/models/` directory.
 2.  Create a folder named `artifacts_remover` inside it, if it doesn't already exist.
