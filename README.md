@@ -40,7 +40,7 @@ The installation consists of two steps: installing the node itself and downloadi
 
 3.  Clone this repository into the `custom_nodes` folder:
     ```bash
-    git clone https://github.com/SnJake/SnJakeNodes.git
+    git clone https://github.com/SnJake/SnJake_JPG_Artifacts_Noise_Cleaner.git
     ```
 
 4.  **Install Dependencies**: Now, you need to install the required Python packages. The command depends on which version of ComfyUI you are using.
@@ -57,7 +57,7 @@ The installation consists of two steps: installing the node itself and downloadi
         1.  Navigate back to the **root** of your portable ComfyUI directory (e.g., `D:\ComfyUI_windows_portable`).
         2.  Run the following command to use the embedded Python to install the requirements. *Do not activate any venv.*
             ```bash
-            python_embeded\python.exe -m pip install -r ComfyUI\custom_nodes\SnJakeNodes\requirements.txt
+            python_embeded\python.exe -m pip install -r ComfyUI\custom_nodes\SnJake_JPG_Artifacts_Noise_Cleaner\requirements.txt
             ```
 
 ### Step 2: Install the Model Weights (Or you can skip this step, the node will download the model weights itself)
