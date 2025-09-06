@@ -1,6 +1,7 @@
 import os
 import math
 from typing import Tuple, Dict, List
+import json
 
 import torch
 import torch.nn as nn
@@ -15,6 +16,22 @@ try:
     from safetensors.torch import load_file as safe_load_file
 except Exception:
     safe_load_file = None
+
+# HF client (optional; node works without it, but autoload disabled)
+try:
+    from huggingface_hub import hf_hub_download
+except Exception:
+    hf_hub_download = None
+
+
+# -----------------------
+#  HF settings
+# -----------------------
+_HF_REPO_ID = "SnJake/JPG_Noise_Remover"
+_HF_DEFAULT_WEIGHT_CANDIDATES = (
+    "best_ema_15E.safetensors",
+    "last.safetensors",
+)
 
 
 # -----------------------
@@ -252,7 +269,7 @@ def _tile_process(img_chw: torch.Tensor, model: nn.Module, tile: int, overlap: i
             patch = img_chw[:, y0:y1, x0:x1].unsqueeze(0).to(device, memory_format=torch.channels_last)
             with torch.amp.autocast(device_type='cuda', dtype=amp_dtype if amp_enabled else torch.float16, enabled=amp_enabled):
                 pred = model(patch)
-            # приведение размеров предсказания к фактическому окну
+
             th, tw = (y1 - y0), (x1 - x0)
             ph, pw = pred.shape[-2], pred.shape[-1]
             use_h, use_w = min(th, ph), min(tw, pw)
@@ -327,18 +344,30 @@ class SnJakeArtifactsRemover:
     @classmethod
     def INPUT_TYPES(cls):
         models_dir = _resolve_models_dir()
-        names = _list_artifact_models_local()
-        default_name = names[0] if names else "<none found>"
-        default_path = os.path.join(models_dir, default_name) if default_name not in ("<none found>",) else os.path.join(models_dir, "last.pt")
+        
+
+        local_names = _list_artifact_models_local()
+        remote_names = list(_HF_DEFAULT_WEIGHT_CANDIDATES)
+        
+        combined_names = set(remote_names)
+        if local_names and local_names[0] != "<none found>":
+            combined_names.update(local_names)
+
+        names = sorted(list(combined_names))
+        if not names:
+            names = ["<none found>"]
+        
+        default_name = _HF_DEFAULT_WEIGHT_CANDIDATES[0] if _HF_DEFAULT_WEIGHT_CANDIDATES[0] in names else names[0]
+        default_path = os.path.join(models_dir, default_name) if default_name not in ("<none found>",) else ""
+
         return {
             "required": {
                 "image": ("IMAGE",),
                 "weights_name": (names, {"default": default_name}),
-                "weights_path": ("STRING", {"default": default_path}),
+                "weights_path": ("STRING", {"default": default_path, "multiline": False}),
                 "base_ch": ("INT", {"default": 64, "min": 16, "max": 256, "step": 8}),
                 "tile": ("INT", {"default": 512, "min": 0, "max": 4096, "step": 16}),
                 "overlap": ("INT", {"default": 64, "min": 0, "max": 1024, "step": 4}),
-                # <-- Новые поля ввода -->
                 "edge_aware_window": ("BOOLEAN", {"default": True}),
                 "blend": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "amp_dtype": (["auto", "bf16", "fp16", "none"], {"default": "auto"}),
@@ -352,25 +381,39 @@ class SnJakeArtifactsRemover:
     CATEGORY = "😎 SnJake/JPG & Noise Remover"
 
     def _resolve_weights(self, weights_name: str, weights_path: str) -> str:
-        # Resolve by dropdown name first (local dir), else manual path
         root = _resolve_models_dir()
-        path = None
+
+        # Приоритет 1: Имя из выпадающего списка
         if weights_name and weights_name not in ("<none found>",):
-            cand = os.path.join(root, weights_name)
-            if os.path.isfile(cand):
-                path = cand
-        if path is None and folder_paths is not None and hasattr(folder_paths, "get_full_path"):
-            try:
-                path = folder_paths.get_full_path("artifacts_remover", weights_name)
-            except Exception:
-                path = None
-        if path is None or not os.path.isfile(path):
-            path = weights_path
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"Weights not found. name='{weights_name}', path='{weights_path}'")
-        return path
+            model_path = os.path.join(root, weights_name)
+
+            # Если выбранная модель не найдена локально, скачиваем её
+            if not os.path.isfile(model_path):
+                print(f"[SnJakeArtifactsRemover] Модель '{weights_name}' не найдена. Попытка скачивания с Hugging Face...")
+                if hf_hub_download is None:
+                    raise ImportError("huggingface_hub не установлен. Пожалуйста, установите его для автоматического скачивания моделей: pip install huggingface_hub")
+                try:
+                    hf_hub_download(
+                        repo_id=_HF_REPO_ID,
+                        filename=weights_name,
+                        local_dir=root,
+                        local_dir_use_symlinks=False,
+                    )
+                    print(f"[SnJakeArtifactsRemover] Скачивание завершено: {weights_name}")
+                except Exception as e:
+                    raise FileNotFoundError(f"Не удалось скачать '{weights_name}' с Hugging Face. Ошибка: {e}")
+            
+            # Теперь файл должен существовать
+            if os.path.isfile(model_path):
+                return model_path
+
+        # Приоритет 2: Путь, указанный вручную, если список не сработал
+        if weights_path and os.path.isfile(weights_path):
+            return weights_path
+
+        # Ошибка, если ничего не найдено
+        raise FileNotFoundError(f"Файл весов не найден. Проверено имя='{weights_name}' и путь='{weights_path}'")
     
-    # <-- Метод обновлен -->
     def apply(self, image, weights_name, weights_path, base_ch, tile, overlap, edge_aware_window, blend, amp_dtype, device):
         if device == "auto":
             device_t = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -384,7 +427,7 @@ class SnJakeArtifactsRemover:
 
         b, h, w, c = image.shape
         if c != 3:
-            raise ValueError("Only 3-channel RGB images are supported")
+            raise ValueError("Поддерживаются только 3-канальные RGB изображения")
 
         out_list = []
         for i in range(b):
