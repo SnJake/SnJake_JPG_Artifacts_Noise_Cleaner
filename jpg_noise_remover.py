@@ -1,6 +1,7 @@
 import os
 import math
 from typing import Tuple, Dict, List
+import json
 
 import torch
 import torch.nn as nn
@@ -15,6 +16,24 @@ try:
     from safetensors.torch import load_file as safe_load_file
 except Exception:
     safe_load_file = None
+
+# HF client (optional; node works without it, but autoload disabled)
+try:
+    from huggingface_hub import hf_hub_download
+except Exception:
+    hf_hub_download = None
+
+
+# -----------------------
+#  HF settings
+# -----------------------
+_HF_REPO_ID = "SnJake/JPG_Noise_Remover"
+_HF_CONFIG_NAMES = ("config.json",)
+_HF_DEFAULT_WEIGHT_CANDIDATES = (
+    "best_ema_15E.safetensors",
+    "last.safetensors",
+    "model.safetensors",
+)
 
 
 # -----------------------
@@ -207,6 +226,83 @@ def _resolve_models_dir() -> str:
     return path
 
 
+def _read_hf_config(local_cfg_path: str) -> List[str]:
+    try:
+        with open(local_cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        keys = ("files", "weights", "weight_files", "filename", "weight", "model_file")
+        out = []
+        for k in keys:
+            v = cfg.get(k)
+            if isinstance(v, list):
+                out += [str(x) for x in v]
+            elif isinstance(v, str):
+                out.append(v)
+        return [x for x in out if any(x.lower().endswith(e) for e in _VALID_EXTS)]
+    except Exception:
+        return []
+
+
+def _ensure_hf_weights(models_dir: str) -> List[str]:
+    """
+    Если весов нет — тянет config.json (учёт загрузок) и заявленные в нём файлы.
+    Возвращает список локально найденных весов.
+    """
+    try:
+        names = [n for n in os.listdir(models_dir)
+                 if n.lower().endswith(_VALID_EXTS) and os.path.isfile(os.path.join(models_dir, n))]
+    except Exception:
+        names = []
+    if names:
+        return sorted(names)
+
+    if hf_hub_download is None:
+        print("[SnJakeArtifactsRemover] huggingface_hub не установлен — автозагрузка отключена.")
+        return []
+
+
+    cfg_local = None
+    for cfg_name in _HF_CONFIG_NAMES:
+        try:
+            cfg_local = hf_hub_download(
+                repo_id=_HF_REPO_ID,
+                filename=cfg_name,
+                local_dir=models_dir,
+                local_dir_use_symlinks=False,
+            )
+            break
+        except Exception as e:
+            print(f"[SnJakeArtifactsRemover] не удалось скачать {cfg_name}: {e}")
+            continue
+
+    weight_files = _read_hf_config(cfg_local) if (cfg_local and os.path.isfile(cfg_local)) else []
+    if not weight_files:
+        weight_files = list(_HF_DEFAULT_WEIGHT_CANDIDATES)
+
+
+    for fname in weight_files:
+        dst = os.path.join(models_dir, fname)
+        if os.path.isfile(dst):
+            continue
+        try:
+            hf_hub_download(
+                repo_id=_HF_REPO_ID,
+                filename=fname,
+                local_dir=models_dir,
+                local_dir_use_symlinks=False,
+            )
+            print(f"[SnJakeArtifactsRemover] скачано: {fname}")
+        except Exception as e:
+            print(f"[SnJakeArtifactsRemover] не удалось скачать {fname}: {e}")
+
+    try:
+        names = [n for n in os.listdir(models_dir)
+                 if n.lower().endswith(_VALID_EXTS) and os.path.isfile(os.path.join(models_dir, n))]
+    except Exception:
+        names = []
+    return sorted(names)
+
+
 def _list_artifact_models_local() -> List[str]:
     # List all filenames with allowed extensions from artifacts_remover dir (non-recursive)
     root = _resolve_models_dir()
@@ -252,7 +348,7 @@ def _tile_process(img_chw: torch.Tensor, model: nn.Module, tile: int, overlap: i
             patch = img_chw[:, y0:y1, x0:x1].unsqueeze(0).to(device, memory_format=torch.channels_last)
             with torch.amp.autocast(device_type='cuda', dtype=amp_dtype if amp_enabled else torch.float16, enabled=amp_enabled):
                 pred = model(patch)
-            # приведение размеров предсказания к фактическому окну
+
             th, tw = (y1 - y0), (x1 - x0)
             ph, pw = pred.shape[-2], pred.shape[-1]
             use_h, use_w = min(th, ph), min(tw, pw)
@@ -327,6 +423,7 @@ class SnJakeArtifactsRemover:
     @classmethod
     def INPUT_TYPES(cls):
         models_dir = _resolve_models_dir()
+        _ensure_hf_weights(models_dir)
         names = _list_artifact_models_local()
         default_name = names[0] if names else "<none found>"
         default_path = os.path.join(models_dir, default_name) if default_name not in ("<none found>",) else os.path.join(models_dir, "last.pt")
@@ -338,7 +435,6 @@ class SnJakeArtifactsRemover:
                 "base_ch": ("INT", {"default": 64, "min": 16, "max": 256, "step": 8}),
                 "tile": ("INT", {"default": 512, "min": 0, "max": 4096, "step": 16}),
                 "overlap": ("INT", {"default": 64, "min": 0, "max": 1024, "step": 4}),
-                # <-- Новые поля ввода -->
                 "edge_aware_window": ("BOOLEAN", {"default": True}),
                 "blend": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "amp_dtype": (["auto", "bf16", "fp16", "none"], {"default": "auto"}),
@@ -354,6 +450,8 @@ class SnJakeArtifactsRemover:
     def _resolve_weights(self, weights_name: str, weights_path: str) -> str:
         # Resolve by dropdown name first (local dir), else manual path
         root = _resolve_models_dir()
+        if not any(os.path.isfile(os.path.join(root, n)) and n.lower().endswith(_VALID_EXTS) for n in os.listdir(root) or []):
+            _ensure_hf_weights(root)
         path = None
         if weights_name and weights_name not in ("<none found>",):
             cand = os.path.join(root, weights_name)
@@ -370,7 +468,7 @@ class SnJakeArtifactsRemover:
             raise FileNotFoundError(f"Weights not found. name='{weights_name}', path='{weights_path}'")
         return path
     
-    # <-- Метод обновлен -->
+
     def apply(self, image, weights_name, weights_path, base_ch, tile, overlap, edge_aware_window, blend, amp_dtype, device):
         if device == "auto":
             device_t = torch.device("cuda" if torch.cuda.is_available() else "cpu")
