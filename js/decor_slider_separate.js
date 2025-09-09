@@ -14,7 +14,7 @@ app.registerExtension({
             cls === "SnJakeArtifactsRemover" ||
             node?.constructor?.name === "SnJakeArtifactsRemover";
 
-        // Fallback: match by human-facing labels (robust to localization/spacing)
+        // Fallback: match by human-facing labels
         const re = /jpg\s*&?\s*noise\s*remover/i;
         const isLabelMatch = re.test(title) || re.test(category);
 
@@ -25,6 +25,23 @@ app.registerExtension({
         const FLAG = "__sjake_anim_init_jpgnr";
         if (node[FLAG]) return;
         node[FLAG] = true;
+
+        // ---- Waves toggle (default: false) ----
+        node.__sjake_waves_enabled = false;
+        if (typeof node.addWidget === "function") {
+            // Don't add twice
+            const hasWidget = (node.widgets || []).some(w => w?.name === "Decor Waves");
+            if (!hasWidget) {
+                const w = node.addWidget(
+                    "toggle",
+                    "Decor Waves",
+                    false,
+                    (v) => { node.__sjake_waves_enabled = !!v; }
+                );
+                // ensure internal flag mirrors widget value
+                node.__sjake_waves_enabled = !!(w?.value);
+            }
+        }
 
         // keep originals
         const prevOnDrawForeground = node.onDrawForeground?.bind(node);
@@ -66,14 +83,21 @@ app.registerExtension({
             ctx.fill();
             ctx.restore();
 
-            // waves
-            const dt = Math.min(0.1, Math.max(0, now - (this.__sjake_last_time || now)));
-            this.__sjake_last_time = now;
-            if (now >= (this.__sjake_next_pulse || now)) {
-                spawnWaves(this, thumbX + thumbW * 0.5, x, x + trackW, theme);
+            // waves (controlled by toggle)
+            if (this.__sjake_waves_enabled) {
+                const dt = Math.min(0.1, Math.max(0, now - (this.__sjake_last_time || now)));
+                this.__sjake_last_time = now;
+                if (now >= (this.__sjake_next_pulse || now)) {
+                    spawnWaves(this, thumbX + thumbW * 0.5, x, x + trackW, theme);
+                    this.__sjake_next_pulse = now + 3 + Math.random() * 4;
+                }
+                drawWaves(ctx, this, x, y, trackW, trackH, theme, dt);
+            } else {
+                // keep memory clean when disabled
+                this.__sjake_waves = [];
                 this.__sjake_next_pulse = now + 3 + Math.random() * 4;
+                this.__sjake_last_time = now;
             }
-            drawWaves(ctx, this, x, y, trackW, trackH, theme, dt);
 
             // thumb
             const pulse = 1 + 0.06 * Math.sin(now * 0.9 + (this.__sjake_phase_offset || 0));
