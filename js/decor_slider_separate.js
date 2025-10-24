@@ -26,23 +26,6 @@ app.registerExtension({
         if (node[FLAG]) return;
         node[FLAG] = true;
 
-        // ---- Waves toggle (default: false) ----
-        node.__sjake_waves_enabled = false;
-        if (typeof node.addWidget === "function") {
-            // Don't add twice
-            const hasWidget = (node.widgets || []).some(w => w?.name === "Decor Waves");
-            if (!hasWidget) {
-                const w = node.addWidget(
-                    "toggle",
-                    "Decor Waves",
-                    false,
-                    (v) => { node.__sjake_waves_enabled = !!v; }
-                );
-                // ensure internal flag mirrors widget value
-                node.__sjake_waves_enabled = !!(w?.value);
-            }
-        }
-
         // keep originals
         const prevOnDrawForeground = node.onDrawForeground?.bind(node);
         const prevOnRemoved = node.onRemoved?.bind(node);
@@ -51,6 +34,70 @@ app.registerExtension({
         node.__sjake_waves = [];
         node.__sjake_last_time = performance.now() / 1000;
         node.__sjake_next_pulse = node.__sjake_last_time + 2 + Math.random() * 4;
+        node.__sjake_anim_frame = null;
+        node.__sjake_waves_enabled = false;
+
+        const ensureRedraw = () => {
+            const canvas = app?.canvas;
+            if (!canvas) return;
+            if (typeof canvas.setDirty === "function") canvas.setDirty(true, true);
+            else if (typeof canvas.draw === "function") canvas.draw(true, true);
+        };
+
+        const stopAnimation = () => {
+            if (node.__sjake_anim_frame != null) {
+                cancelAnimationFrame(node.__sjake_anim_frame);
+                node.__sjake_anim_frame = null;
+            }
+        };
+
+        const animate = () => {
+            if (!node.graph || !node.__sjake_waves_enabled) {
+                stopAnimation();
+                return;
+            }
+            ensureRedraw();
+            node.__sjake_anim_frame = requestAnimationFrame(animate);
+        };
+
+        const startAnimation = () => {
+            if (node.__sjake_anim_frame == null) {
+                node.__sjake_anim_frame = requestAnimationFrame(animate);
+            }
+        };
+
+        const applyWavesState = (enabled) => {
+            const next = !!enabled;
+            node.__sjake_waves_enabled = next;
+            if (next) {
+                node.__sjake_last_time = performance.now() / 1000;
+                node.__sjake_next_pulse = node.__sjake_last_time + 2 + Math.random() * 4;
+                startAnimation();
+            } else {
+                node.__sjake_waves = [];
+                stopAnimation();
+            }
+            ensureRedraw();
+        };
+
+        // ---- Waves toggle (default: false) ----
+        if (typeof node.addWidget === "function") {
+            const widgets = node.widgets || [];
+            let wavesWidget = widgets.find(w => w?.name === "Decor Waves");
+            if (!wavesWidget) {
+                wavesWidget = node.addWidget(
+                    "toggle",
+                    "Decor Waves",
+                    false,
+                    (v) => applyWavesState(v)
+                );
+            } else {
+                wavesWidget.callback = (v) => applyWavesState(v);
+            }
+            applyWavesState(!!(wavesWidget?.value));
+        } else {
+            applyWavesState(false);
+        }
 
         node.onDrawForeground = function (ctx) {
             if (prevOnDrawForeground) prevOnDrawForeground(ctx);
@@ -92,11 +139,6 @@ app.registerExtension({
                     this.__sjake_next_pulse = now + 3 + Math.random() * 4;
                 }
                 drawWaves(ctx, this, x, y, trackW, trackH, theme, dt);
-            } else {
-                // keep memory clean when disabled
-                this.__sjake_waves = [];
-                this.__sjake_next_pulse = now + 3 + Math.random() * 4;
-                this.__sjake_last_time = now;
             }
 
             // thumb
@@ -128,24 +170,9 @@ app.registerExtension({
             ctx.restore();
         };
 
-        // continuous redraw while node exists
-        const ensureRedraw = () => {
-            const canvas = app?.canvas;
-            if (!canvas) return;
-            if (typeof canvas.setDirty === "function") canvas.setDirty(true, true);
-            else if (typeof canvas.draw === "function") canvas.draw(true, true);
-        };
-        const animate = () => {
-            if (!node.graph) return;
-            ensureRedraw();
-            node.__sjake_anim_frame = requestAnimationFrame(animate);
-        };
-        node.__sjake_anim_frame = requestAnimationFrame(animate);
-
         node.onRemoved = function () {
             if (prevOnRemoved) prevOnRemoved();
-            if (this.__sjake_anim_frame) cancelAnimationFrame(this.__sjake_anim_frame);
-            this.__sjake_anim_frame = null;
+            stopAnimation();
         };
     }
 });
