@@ -1,9 +1,14 @@
 import { app } from "../../../scripts/app.js";
 
+// Global toggle: leave false to keep the decorative animation disabled for everyone
+const DECOR_SLIDER_ENABLED = false;
+
 // Decorative slider ONLY for the JPG & Noise Remover node
 app.registerExtension({
     name: "SnJake.DecorSlider.JpgOnly",
     async nodeCreated(node) {
+        if (!DECOR_SLIDER_ENABLED) return;
+
         // ---- strict target check ----
         const cls = String(node?.comfyClass || node?.type || node?.constructor?.name || "");
         const title = String(node?.title || "");
