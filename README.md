@@ -1,5 +1,3 @@
-<img width="2412" height="965" alt="3_Ready" src="https://github.com/user-attachments/assets/3fa1f2a6-0a3a-488e-bbfe-4c98035c5330" /># JPG & Noise Remover for ComfyUI
-
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![Made for ComfyUI](https://img.shields.io/badge/Made%20for-ComfyUI-blueviolet)
