@@ -6,3 +6,7 @@ tqdm
 tensorboard
 pyyaml
 safetensors
+cheesechaser
+huggingface-hub
+pandas
+pyarrow

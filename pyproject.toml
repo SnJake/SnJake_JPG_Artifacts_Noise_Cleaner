@@ -1,7 +1,7 @@
 [project]
 name = "snjake_jpg_artifacts_noise_cleaner"
 description = "This is a custom node for ComfyUI designed to remove JPEG compression artifacts and digital noise from images. It is powered by a lightweight UNetRestorer model that efficiently restores image quality."
-version = "1.0.1"
+version = "2.0.0"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 classifiers = [

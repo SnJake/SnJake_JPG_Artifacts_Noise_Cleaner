@@ -21,6 +21,8 @@ class DegradeDataset(Dataset):
         seed: int | None = None,
         files: list[Path] | None = None,
         clean_prob: float = 0.0,
+        blur_prob: float = 0.0,  # Новый аргумент
+        blur_scale_min: float = 0.5,
     ):
         super().__init__()
         self.root = Path(root)
@@ -33,6 +35,8 @@ class DegradeDataset(Dataset):
         self.rng = random.Random(seed)
         self._bad: set[Path] = set()
         self.clean_prob = float(clean_prob)
+        self.blur_prob = float(blur_prob)
+        self.blur_scale_min = float(blur_scale_min)
 
     def __len__(self):
         return len(self.files)
@@ -47,21 +51,22 @@ class DegradeDataset(Dataset):
                 img = random_crop_pair(img, self.patch_size)
 
                 clean = img
-                # Deterministic per call if seed set and idx used, else random
                 if self.rng is not None:
                     state = random.getstate()
                     random.seed(self.rng.randint(0, 2**31 - 1))
+                
                 is_clean = 0
                 if random.random() < self.clean_prob:
                     noisy = clean
                     is_clean = 1
                 else:
-                    noisy = degrade(clean, self.jpeg_min, self.jpeg_max, self.noise_std)
+                    # Передаем blur_prob
+                    noisy = degrade(clean, self.jpeg_min, self.jpeg_max, self.noise_std, self.blur_prob, self.blur_scale_min)
+                
                 if self.rng is not None:
                     random.setstate(state)
 
                 if self.augment:
-                    # Random flips/rot90
                     if random.random() < 0.5:
                         clean = clean.transpose(Image.FLIP_LEFT_RIGHT)
                         noisy = noisy.transpose(Image.FLIP_LEFT_RIGHT)
@@ -72,11 +77,9 @@ class DegradeDataset(Dataset):
 
                 clean_t = pil_to_torch(clean)
                 noisy_t = pil_to_torch(noisy)
-                # Return a mask flag marking clean-as-noisy samples for identity loss
                 return noisy_t, clean_t, torch.tensor(is_clean, dtype=torch.uint8)
             except (UnidentifiedImageError, OSError, ValueError):
                 self._bad.add(path)
-                # пробуем другой индекс
                 idx = random.randrange(len(self.files))
                 if tries >= 20:
                     raise

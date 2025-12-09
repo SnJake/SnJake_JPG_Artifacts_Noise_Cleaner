@@ -52,7 +52,6 @@ def random_crop_pair(img: Image.Image, size: int) -> Image.Image:
 
 
 def apply_jpeg(img: Image.Image, quality: int) -> Image.Image:
-    # Faster via OpenCV when possible
     arr = np.array(img, dtype=np.uint8)[:, :, ::-1]
     result, enc = cv2.imencode(".jpg", arr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
     if not result:
@@ -77,8 +76,32 @@ def add_gaussian_noise(img: Image.Image, std_min: float, std_max: float) -> Imag
     return Image.fromarray(arr)
 
 
-def degrade(img: Image.Image, jpeg_min: int, jpeg_max: int, noise_std: Tuple[float, float]) -> Image.Image:
-    # Random order: sometimes noise first, sometimes after JPEG
+def apply_blur_downscale(img: Image.Image, prob: float, scale_min: float = 0.5) -> Image.Image:
+    """Random downscale->upscale blur. scale_min controls blur strength (lower = blurrier)."""
+    if random.random() >= prob:
+        return img
+
+    w, h = img.size
+    scale = random.uniform(scale_min, 0.95)
+
+    new_w, new_h = int(w * scale), int(h * scale)
+    small = img.resize((new_w, new_h), Image.BICUBIC)
+    blurred = small.resize((w, h), Image.BICUBIC)
+    return blurred
+
+
+def degrade(
+    img: Image.Image,
+    jpeg_min: int,
+    jpeg_max: int,
+    noise_std: Tuple[float, float],
+    blur_prob: float = 0.0,
+    blur_scale_min: float = 0.5,
+) -> Image.Image:
+    # 1. Blur: random downscale->upscale before JPEG/noise
+    img = apply_blur_downscale(img, prob=blur_prob, scale_min=blur_scale_min)
+
+    # 2. Random JPEG/Noise order
     q = random.randint(jpeg_min, jpeg_max)
     if random.random() < 0.5:
         img = apply_jpeg(img, q)
@@ -97,10 +120,6 @@ def psnr(pred: torch.Tensor, target: torch.Tensor) -> float:
 
 
 def make_hann_window(tile: int, device: torch.device):
-    # Standard Hann window is exactly 0 at borders, which causes zero
-    # weights on image edges (no overlapping tiles beyond the border),
-    # producing black lines after normalization. Add a small floor so
-    # weights are never zero and cancel out during normalization.
     w = torch.hann_window(tile, device=device, periodic=False)
     eps = 1e-3
     w = eps + (1.0 - eps) * w

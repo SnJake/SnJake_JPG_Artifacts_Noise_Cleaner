@@ -1,140 +1,189 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+try:
+    import torch
+except ImportError:
+    print("[Ошибка] Требуется PyTorch: pip install torch", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    from safetensors.torch import save_file as safetensors_save_file
+except ImportError:
+    print("[Ошибка] Требуется safetensors: pip install safetensors", file=sys.stderr)
+    sys.exit(1)
 
 
 def _strip_module_prefix(state_dict: Dict[str, Any]) -> Dict[str, Any]:
-    if not any(k.startswith("module.") for k in state_dict.keys()):
-        return state_dict
-    return { (k[7:] if k.startswith("module.") else k): v for k, v in state_dict.items() }
+    """Убирает префикс 'module.' из ключей, если модель была сохранена через DataParallel."""
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith("module."):
+            new_state_dict[k[7:]] = v
+        else:
+            new_state_dict[k] = v
+    return new_state_dict
 
 
-def _extract_state_dict(obj: Any):
-    try:
-        import torch
-        from torch import nn
-    except Exception as e:  # pragma: no cover
-        print("[Ошибка] Требуется PyTorch: pip install torch", file=sys.stderr)
-        raise
+def get_state_dict(ckpt: Any, key_selector: Optional[str] = None) -> Dict[str, torch.Tensor]:
+    """
+    Извлекает словарь весов из чекпоинта.
+    Приоритет: 
+    1. Если указан key_selector, ищем этот ключ.
+    2. Иначе ищем 'ema' (обычно лучшее качество).
+    3. Иначе ищем 'model'.
+    4. Иначе ищем 'state_dict'.
+    5. Иначе проверяем, является ли сам объект словарем тензоров.
+    """
+    
+    # Если ckpt - это сразу словарь весов (flat dict)
+    is_flat_dict = isinstance(ckpt, dict) and all(isinstance(v, torch.Tensor) for v in ckpt.values())
+    
+    if is_flat_dict and not key_selector:
+        print(f" -> Чекпоинт определен как плоский словарь весов.")
+        return ckpt
 
-    # Direct module -> state_dict
-    if isinstance(obj, nn.Module):
-        return obj.state_dict()
+    if not isinstance(ckpt, dict):
+        raise ValueError("Чекпоинт не является словарем.")
 
-    # Plain state dict (all tensors)
-    if isinstance(obj, dict) and obj:
-        if all(hasattr(v, "device") and hasattr(v, "dtype") for v in obj.values()):
-            return obj
+    # Логика автоматического выбора
+    keys_to_try = []
+    if key_selector:
+        keys_to_try.append(key_selector)
+    else:
+        # Приоритет по умолчанию для скриптов обучения из этого проекта
+        keys_to_try = ["ema", "model", "state_dict", "params"]
 
-        # Common wrappers
-        for key in (
-            "state_dict",
-            "model_state_dict",
-            "ema_state_dict",
-            "model",
-            "module",
-            "net",
-            "generator",
-            "ema",
-        ):
-            if key in obj:
-                cand = obj[key]
-                # unwrap recursively
-                try:
-                    sd = _extract_state_dict(cand)
-                    if sd:
-                        return sd
-                except Exception:
-                    pass
+    for k in keys_to_try:
+        if k in ckpt:
+            candidate = ckpt[k]
+            # Проверяем, что внутри словарь
+            if isinstance(candidate, dict):
+                # Простейшая проверка, что там есть тензоры
+                # (иногда ema - это объект класса, но torch.save сохраняет его state_dict как dict)
+                print(f" -> Найден ключ '{k}', используем его.")
+                return candidate
+            elif isinstance(candidate, torch.nn.Module):
+                print(f" -> Ключ '{k}' является nn.Module, берем state_dict().")
+                return candidate.state_dict()
+    
+    # Если ничего не нашли, но пользователь не просил конкретный ключ, 
+    # пробуем отфильтровать тензоры из корня (на случай если там смешаны 'epoch' и веса)
+    tensor_dict = {k: v for k, v in ckpt.items() if isinstance(v, torch.Tensor)}
+    if len(tensor_dict) > 0 and not key_selector:
+        print(" -> Ключи модели не найдены явно, извлечены все тензоры из корня словаря.")
+        return tensor_dict
 
-        # Fallback: choose largest tensor-mapping sub-dict
-        best = None
-        best_count = -1
-        for v in obj.values():
-            if isinstance(v, dict) and v:
-                if all(hasattr(t, "device") and hasattr(t, "dtype") for t in v.values()):
-                    c = len(v)
-                    if c > best_count:
-                        best, best_count = v, c
-        if best is not None:
-            return best
-
-    raise ValueError("Не удалось извлечь state_dict из чекпоинта")
+    available_keys = list(ckpt.keys())
+    raise ValueError(f"Не удалось найти веса модели. Доступные ключи: {available_keys}. "
+                     f"Попробуйте указать --key.")
 
 
-def convert_pt_to_safetensors(input_path: Path, output_path: Path) -> None:
-    try:
-        import torch
-    except Exception:
-        print("[Ошибка] Требуется PyTorch: pip install torch", file=sys.stderr)
-        raise
+def convert_pt_to_safetensors(
+    input_path: Path, 
+    output_path: Path, 
+    key: Optional[str] = None, 
+    target_dtype: Optional[torch.dtype] = None
+) -> None:
+    
+    print(f"Загрузка: {input_path}")
+    # Загружаем на CPU, чтобы не занимать GPU
+    ckpt = torch.load(str(input_path), map_location="cpu", weights_only=False)
 
-    try:
-        from safetensors.torch import save_file as safetensors_save_file
-    except Exception:
-        print("[Ошибка] Требуется safetensors: pip install safetensors", file=sys.stderr)
-        raise
-
-    # Load checkpoint
-    ckpt = torch.load(str(input_path), map_location="cpu")
-
-    # Extract state dict
-    state_dict = _extract_state_dict(ckpt)
+    state_dict = get_state_dict(ckpt, key)
     state_dict = _strip_module_prefix(state_dict)
 
-    # Ensure tensors are on CPU and contiguous
-    def to_cpu_contiguous(x):
-        try:
-            if hasattr(x, "detach"):
-                x = x.detach()
-            # move to cpu
-            if hasattr(x, "to"):
-                x = x.to("cpu")
-            elif hasattr(x, "cpu"):
-                x = x.cpu()
-            # pack non-contiguous views
-            if hasattr(x, "is_contiguous") and hasattr(x, "contiguous"):
-                if not x.is_contiguous():
-                    x = x.contiguous()
-        except Exception:
-            # If anything goes wrong, return as is so the caller sees the real error
-            return x
-        return x
+    # Подготовка тензоров
+    clean_state_dict = {}
+    for k, v in state_dict.items():
+        if not isinstance(v, torch.Tensor):
+            continue
+            
+        # Отвязываем от графа, переносим на CPU
+        t = v.detach().cpu()
+        
+        # Приведение типов (например, float32 -> float16)
+        if target_dtype is not None:
+            # Не конвертируем целочисленные тензоры (например, буферы позиций или шаги)
+            if t.dtype in (torch.float32, torch.float64):
+                t = t.to(dtype=target_dtype)
+        
+        # Safetensors требует contiguous памяти
+        if not t.is_contiguous():
+            t = t.contiguous()
+            
+        clean_state_dict[k] = t
 
-    cpu_state_dict = {k: to_cpu_contiguous(v) for k, v in state_dict.items()}
+    if not clean_state_dict:
+        raise ValueError("Словарь весов пуст после фильтрации.")
 
-    # Save as safetensors
+    print(f"Сохранение: {output_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    safetensors_save_file(cpu_state_dict, str(output_path), metadata={"converted_from": str(input_path)})
+    
+    metadata = {"format": "pt"}
+    if key:
+        metadata["source_key"] = key
+        
+    safetensors_save_file(clean_state_dict, str(output_path), metadata=metadata)
+    print(f"Успешно конвертировано {len(clean_state_dict)} тензоров.")
 
 
-def main(argv=None):
+def main():
     parser = argparse.ArgumentParser(
-        description="Конвертация модели из .pt/.pth в .safetensors (сохраняет рядом с входным файлом)",
+        description="Конвертация модели из .pt/.pth в .safetensors"
     )
     parser.add_argument(
-        "--input",
+        "--input", "-i",
         required=True,
         help="Путь к входному файлу модели (.pt/.pth)",
     )
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--output", "-o",
+        help="Путь к выходному файлу (по умолчанию: рядом с входным с расширением .safetensors)",
+    )
+    parser.add_argument(
+        "--key", "-k",
+        type=str,
+        default=None,
+        help="Ключ в словаре чекпоинта, где лежат веса (например: 'ema' или 'model'). "
+             "Если не указан, скрипт попытается найти 'ema', затем 'model'."
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="fp16",
+        choices=["auto", "float32", "fp32", "float16", "fp16", "bfloat16", "bf16"],
+        help="Целевой тип данных для float-тензоров. 'fp16' уменьшает размер файла в 2 раза. (default: fp16)"
+    )
+
+    args = parser.parse_args()
 
     in_path = Path(args.input).expanduser().resolve()
     if not in_path.exists():
         print(f"[Ошибка] Файл не найден: {in_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Output next to input with .safetensors extension
-    out_path = in_path.with_suffix(".safetensors")
+    if args.output:
+        out_path = Path(args.output).resolve()
+    else:
+        out_path = in_path.with_suffix(".safetensors")
+
+    # Определение dtype
+    dt_map = {
+        "float32": torch.float32, "fp32": torch.float32,
+        "float16": torch.float16, "fp16": torch.float16,
+        "bfloat16": torch.bfloat16, "bf16": torch.bfloat16,
+        "auto": None
+    }
+    target_dtype = dt_map.get(args.dtype, None)
 
     try:
-        convert_pt_to_safetensors(in_path, out_path)
+        convert_pt_to_safetensors(in_path, out_path, args.key, target_dtype)
     except Exception as e:
         print(f"[Ошибка] Конвертация не удалась: {e}", file=sys.stderr)
         sys.exit(1)
-
-    print(f"Готово: {out_path}")
 
 
 if __name__ == "__main__":

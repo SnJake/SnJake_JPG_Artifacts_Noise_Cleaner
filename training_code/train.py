@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from models import UNetRestorer
 from dataset import DegradeDataset
-from losses import CharbonnierLoss, MixL1SSIM
+from losses import CharbonnierLoss, MixL1SSIM, PerceptualLoss  # Import Perceptual
 from losses import GradientLoss, HFENLoss  
 from utils import psnr, list_images
 from ema import ModelEma
@@ -36,13 +36,16 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--val-ratio", type=float, default=0.02)
     p.add_argument("--accum-steps", type=int, default=1)
-    p.add_argument("--clean-prob", type=float, default=0.0, help="Probability to use clean-as-noisy (identity) for detail preservation")
-    p.add_argument("--id-loss-w", type=float, default=0.0, help="Extra L1 on output vs input for clean-as-noisy samples to keep sharpness")
+    
+    # Data Augmentation & Degradation
+    p.add_argument("--clean-prob", type=float, default=0.0, help="Probability to use clean-as-noisy")
+    p.add_argument("--blur-prob", type=float, default=0.0, help="Probability to blur input (for sharpening learning)")
+    p.add_argument("--id-loss-w", type=float, default=0.0)
 
-    # Degradation
     p.add_argument("--jpeg-min", type=int, default=5)
     p.add_argument("--jpeg-max", type=int, default=75)
     p.add_argument("--noise-std", type=float, nargs=2, default=[0.0, 10.0], metavar=("MIN", "MAX"))
+    p.add_argument("--blur-scale-min", type=float, default=0.5, help="Min scale for blur downscale (lower = blurrier)")
 
     # Optim
     p.add_argument("--lr", type=float, default=2e-4)
@@ -54,18 +57,17 @@ def parse_args():
 
     # AMP/EMA
     p.add_argument("--no-amp", action="store_true")
-    p.add_argument("--amp-dtype", type=str, default="auto", choices=["auto", "fp16", "bf16", "none"],
-                   help="AMP dtype: auto prefers bf16 if supported")
+    p.add_argument("--amp-dtype", type=str, default="auto", choices=["auto", "fp16", "bf16", "none"])
     p.add_argument("--ema-decay", type=float, default=0.999)
-    p.add_argument("--mix-alpha", type=float, default=0.84, help="Weight inside MixL1SSIM: alpha*L1 + (1-alpha)*(1-SSIM)")
-    p.add_argument("--edge-loss-w", type=float, default=0.0, help="Weight for gradient (edge) loss to preserve details")
+
+    # Losses
+    p.add_argument("--mix-alpha", type=float, default=0.84)
+    p.add_argument("--edge-loss-w", type=float, default=0.0)
     p.add_argument("--hfen-w", type=float, default=0.0)
+    p.add_argument("--perceptual-w", type=float, default=0.0, help="Weight for VGG Perceptual Loss")
 
-    # Model
     p.add_argument("--base-ch", type=int, default=64)
-
-    # Resume
-    p.add_argument("--resume", type=str, default="", help="Path to checkpoint to resume")
+    p.add_argument("--resume", type=str, default="")
 
     return p.parse_args()
 
@@ -91,6 +93,8 @@ def build_dataloaders(args):
         seed=None,
         files=train_files,
         clean_prob=args.clean_prob,
+        blur_prob=args.blur_prob, # <-- прокидываем
+        blur_scale_min=args.blur_scale_min,
     )
     val_ds = DegradeDataset(
         root=args.data_root,
@@ -102,6 +106,8 @@ def build_dataloaders(args):
         seed=args.seed + 123,
         files=val_files,
         clean_prob=0.0,
+        blur_prob=args.blur_prob, # <-- Валидация тоже может быть размытой, чтобы чекать метрики
+        blur_scale_min=args.blur_scale_min,
     )
 
     train_loader = DataLoader(
@@ -133,7 +139,6 @@ def save_ckpt(state: dict, path: Path):
 def load_ckpt_if_any(model, optimizer, scaler, scheduler, ema, path: str):
     if not path:
         return 0, 0.0
-    # PyTorch >=2.6 defaults to weights_only=True which breaks optimizer/scaler unpickling
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
     model.load_state_dict(ckpt["model"])
     if optimizer is not None and "opt" in ckpt:
@@ -154,7 +159,6 @@ def load_ckpt_if_any(model, optimizer, scaler, scheduler, ema, path: str):
 
 def main():
     args = parse_args()
-    # Seeds
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -176,7 +180,6 @@ def main():
 
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
 
-    # AMP precision selection
     amp_enabled = (not args.no_amp) and (device.type == "cuda") and (args.amp_dtype.lower() != "none")
     if amp_enabled:
         if args.amp_dtype == "auto":
@@ -198,14 +201,20 @@ def main():
 
     ema = ModelEma(model, decay=args.ema_decay) if args.ema_decay > 0 else None
 
-    # Loss: Charbonnier + SSIM mix (weighted)
-    l_char = CharbonnierLoss()
-    l_hfen = HFENLoss()
-    l_mix = MixL1SSIM(alpha=args.mix_alpha)
-    l_edge = GradientLoss() if args.edge_loss_w > 0 else None
+    # INIT LOSSES
+    l_char = CharbonnierLoss().to(device)
+    l_mix = MixL1SSIM(alpha=args.mix_alpha).to(device)
+    
+    l_edge = GradientLoss().to(device) if args.edge_loss_w > 0 else None
+    l_hfen = HFENLoss().to(device) if args.hfen_w > 0 else None
+    
+    # Init Perceptual
+    l_perc = None
+    if args.perceptual_w > 0:
+        print("Initializing VGG19 Perceptual Loss...")
+        l_perc = PerceptualLoss().to(device).eval()
 
     start_epoch, best_psnr = load_ckpt_if_any(model, optimizer, scaler, scheduler, ema, args.resume)
-
     global_step = steps_per_epoch * start_epoch
 
     for epoch in range(start_epoch, args.epochs):
@@ -220,20 +229,27 @@ def main():
             else:
                 noisy, clean = batch
                 is_clean = torch.zeros((noisy.size(0),), dtype=torch.uint8)
+            
             noisy = noisy.to(device, non_blocking=True, memory_format=torch.channels_last)
             clean = clean.to(device, non_blocking=True, memory_format=torch.channels_last)
             is_clean = is_clean.to(device, non_blocking=True)
 
             with autocast(device_type='cuda', dtype=amp_dtype if amp_dtype is not None else torch.float16, enabled=amp_enabled):
                 pred = model(noisy)
+                
+                # Base pixel loss
                 loss = 0.7 * l_char(pred, clean) + 0.3 * l_mix(pred, clean)
+                
+                # Addons
                 if l_edge is not None:
                     loss = loss + args.edge_loss_w * l_edge(pred, clean)
-                if args.hfen_w > 0:
+                if l_hfen is not None:
                     loss = loss + args.hfen_w * l_hfen(pred, clean)
-                # Identity loss: when input is already clean, force output≈input
+                if l_perc is not None:
+                    loss = loss + args.perceptual_w * l_perc(pred, clean)
+
+                # Identity loss
                 if args.id_loss_w > 0:
-                    # Broadcast mask to N,1,H,W (and channels) via multiplication later
                     if is_clean.dtype != torch.float32:
                         m = is_clean.float()
                     else:
@@ -241,7 +257,6 @@ def main():
                     if m.sum() > 0:
                         m = m.view(-1, 1, 1, 1)
                         id_l1 = torch.abs(pred - noisy)
-                        # Mean over only masked elements
                         denom = (m.sum() * id_l1.size(1) * id_l1.size(2) * id_l1.size(3)).clamp_min(1.0)
                         id_loss = (id_l1 * m).sum() / denom
                         loss = loss + args.id_loss_w * id_loss
@@ -258,7 +273,6 @@ def main():
 
                 if ema is not None:
                     ema.update(model)
-
                 if scheduler is not None:
                     scheduler.step()
 
@@ -283,9 +297,9 @@ def main():
                 clean = clean.to(device, non_blocking=True, memory_format=torch.channels_last)
                 with autocast(device_type='cuda', dtype=amp_dtype if amp_enabled else torch.float16, enabled=amp_enabled):
                     pred = eval_model(noisy)
-                    vloss = 0.7 * l_char(pred, clean) + 0.3 * l_mix(pred, clean)
-                    if l_edge is not None:
-                        vloss = vloss + args.edge_loss_w * l_edge(pred, clean)
+                    # Simple validation metric without VGG to save time/mem
+                    vloss = l_char(pred, clean)
+                
                 val_loss += vloss.item() * noisy.size(0)
                 val_psnr += psnr(pred, clean) * noisy.size(0)
                 n += noisy.size(0)
@@ -295,7 +309,6 @@ def main():
             writer.add_scalar("val/loss", val_loss, epoch)
             writer.add_scalar("val/psnr", val_psnr, epoch)
 
-        # Save checkpoints
         last_state = {
             "epoch": epoch + 1,
             "model": model.state_dict(),

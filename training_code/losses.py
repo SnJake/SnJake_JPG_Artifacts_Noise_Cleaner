@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import torchvision
 
 class CharbonnierLoss(nn.Module):
     def __init__(self, eps: float = 1e-3):
@@ -72,3 +72,50 @@ class HFENLoss(nn.Module):
         p = F.conv2d(pred, k, padding="same", groups=self.groups)
         t = F.conv2d(target, k, padding="same", groups=self.groups)
         return (p - t).abs().mean()
+
+
+class PerceptualLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # VGG19 features. Используем стандартные слои для perceptual loss.
+        # weights=True загрузит ImageNet веса (requires internet on first run)
+        vgg = torchvision.models.vgg19(weights=torchvision.models.VGG19_Weights.IMAGENET1K_V1)
+        # Нам нужны только feature extractor слои
+        self.features = vgg.features
+        # Замораживаем веса
+        for param in self.features.parameters():
+            param.requires_grad = False
+        
+        # Индексы слоев после ReLU: relu1_2, relu2_2, relu3_4, relu4_4, relu5_4
+        # Это классический набор для style/perceptual loss
+        self.layer_indices = {'3': 0.1, '8': 0.1, '17': 1.0, '26': 1.0, '35': 1.0}
+        
+        # Нормализация ImageNet
+        self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+        self.max_hw = 224  # clamp VGG input spatial size to save VRAM/compute
+
+    def forward(self, pred, target):
+        # Вход должен быть [0, 1]. Нормализуем под VGG
+        pred_norm = (pred - self.mean) / self.std
+        target_norm = (target - self.mean) / self.std
+        if max(pred_norm.shape[-2:]) > self.max_hw:
+            target_size = (self.max_hw, self.max_hw)
+            pred_norm = F.interpolate(pred_norm, size=target_size, mode="bilinear", align_corners=False)
+            target_norm = F.interpolate(target_norm, size=target_size, mode="bilinear", align_corners=False)
+        
+        loss = 0.0
+        x = pred_norm
+        y = target_norm
+        
+        for i, layer in enumerate(self.features):
+            x = layer(x)
+            y = layer(y)
+            if str(i) in self.layer_indices:
+                w = self.layer_indices[str(i)]
+                loss += w * F.l1_loss(x, y)
+            
+            # Ранний выход, если прошли последний нужный слой (35)
+            if i >= 35:
+                break
+        return loss
