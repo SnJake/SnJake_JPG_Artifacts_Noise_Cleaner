@@ -1,7 +1,6 @@
 import os
 import math
-from typing import Tuple, Dict, List
-import json
+from typing import Tuple, Dict, List, Optional, NamedTuple
 
 import torch
 import torch.nn as nn
@@ -23,154 +22,42 @@ try:
 except Exception:
     hf_hub_download = None
 
+try:
+    from .legacy_unet import UNetRestorer as LegacyUNetRestorer
+    from .nafnet_unet import UNetRestorer as NAFNetRestorer
+except Exception:
+    # Allow running as a plain script
+    from legacy_unet import UNetRestorer as LegacyUNetRestorer
+    from nafnet_unet import UNetRestorer as NAFNetRestorer
+
 
 # -----------------------
 #  HF settings
 # -----------------------
 _HF_REPO_ID = "SnJake/JPG_Noise_Remover"
 _HF_DEFAULT_WEIGHT_CANDIDATES = (
+    "best_ema_v2_E11.pt",
+    "best_ema_v2_E11_BF16.safetensors",
     "best_ema_15E.safetensors",
-    "last.safetensors",
 )
 
 
 # -----------------------
-#  Minimal UNetRestorer
+#  Known weight metadata
 # -----------------------
 
-def conv3x3(in_ch, out_ch, stride=1, groups=1):
-    return nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=stride, padding=1, groups=groups, bias=True)
+class _ModelSpec(NamedTuple):
+    arch: str
+    base_ch: int
+    preferred_amp: Optional[str] = None
 
 
-class ResidualBlock(nn.Module):
-    def __init__(self, ch, groups=1, expansion=2):
-        super().__init__()
-        mid = ch * expansion
-        self.conv1 = conv3x3(ch, mid, groups=groups)
-        self.act = nn.SiLU(inplace=True)
-        self.conv2 = conv3x3(mid, ch, groups=groups)
+_KNOWN_MODEL_SPECS: Dict[str, _ModelSpec] = {
+    "best_ema_v2_E11.pt": _ModelSpec("nafnet_v2", 64, None),
+    "best_ema_v2_E11_BF16.safetensors": _ModelSpec("nafnet_v2", 64, "bf16"),
+    "best_ema_15E.safetensors": _ModelSpec("legacy_v1", 64, None),
+}
 
-    def forward(self, x):
-        identity = x
-        out = self.conv1(x)
-        out = self.act(out)
-        out = self.conv2(out)
-        return out + identity
-
-
-class Down(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, 3, stride=2, padding=1)
-
-    def forward(self, x):
-        return self.conv(x)
-
-
-class Up(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch * 4, 3, padding=1)
-        self.act = nn.SiLU(inplace=True)
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = torch.nn.functional.pixel_shuffle(x, 2)
-        return self.act(x)
-
-
-class CBAM(nn.Module):
-    def __init__(self, ch, r=8):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(ch, max(ch // r, 8), 1, bias=True),
-            nn.SiLU(inplace=True),
-            nn.Conv2d(max(ch // r, 8), ch, 1, bias=True),
-        )
-        self.spatial = nn.Conv2d(2, 1, 7, padding=3)
-
-    def forward(self, x):
-        ca = torch.sigmoid(self.mlp(x))
-        x = x * ca
-        avg = torch.mean(x, dim=1, keepdim=True)
-        mx, _ = torch.max(x, dim=1, keepdim=True)
-        sa = torch.sigmoid(self.spatial(torch.cat([avg, mx], dim=1)))
-        return x * sa
-
-
-class UNetBlock(nn.Module):
-    def __init__(self, ch, n_blocks=2, use_cbam=False):
-        super().__init__()
-        layers = []
-        for _ in range(n_blocks):
-            layers.append(ResidualBlock(ch))
-        self.body = nn.Sequential(*layers)
-        self.cbam = CBAM(ch) if use_cbam else None
-
-    def forward(self, x):
-        x = self.body(x)
-        if self.cbam is not None:
-            x = self.cbam(x)
-        return x
-
-
-class UNetRestorer(nn.Module):
-    def __init__(self, in_ch=3, base_ch=64, depths=(2, 2, 4, 4), use_cbam=(False, True, True, False), out_ch=3):
-        super().__init__()
-        self.entry = nn.Conv2d(in_ch, base_ch, 3, padding=1)
-
-        chs = [base_ch, base_ch * 2, base_ch * 4, base_ch * 8]
-
-        # Encoder
-        self.enc0 = UNetBlock(chs[0], n_blocks=depths[0], use_cbam=use_cbam[0])
-        self.down0 = Down(chs[0], chs[1])
-        self.enc1 = UNetBlock(chs[1], n_blocks=depths[1], use_cbam=use_cbam[1])
-        self.down1 = Down(chs[1], chs[2])
-        self.enc2 = UNetBlock(chs[2], n_blocks=depths[2], use_cbam=use_cbam[2])
-        self.down2 = Down(chs[2], chs[3])
-        self.enc3 = UNetBlock(chs[3], n_blocks=depths[3], use_cbam=use_cbam[3])
-
-        # Decoder
-        self.up2 = Up(chs[3], chs[2])
-        self.dec2 = UNetBlock(chs[2] + chs[2], n_blocks=2, use_cbam=False)
-        self.up1 = Up(chs[2] + chs[2], chs[1])
-        self.dec1 = UNetBlock(chs[1] + chs[1], n_blocks=2, use_cbam=False)
-        self.up0 = Up(chs[1] + chs[1], chs[0])
-        self.dec0 = UNetBlock(chs[0] + chs[0], n_blocks=2, use_cbam=False)
-
-        self.exit = nn.Conv2d(chs[0] + chs[0], out_ch, 3, padding=1)
-
-    def forward(self, x):
-        x0 = self.entry(x)
-        e0 = self.enc0(x0)
-        x1 = self.down0(e0)
-        e1 = self.enc1(x1)
-        x2 = self.down1(e1)
-        e2 = self.enc2(x2)
-        x3 = self.down2(e2)
-        e3 = self.enc3(x3)
-
-        d2 = self.up2(e3)
-        if d2.shape[-2:] != e2.shape[-2:]:
-            d2 = F.interpolate(d2, size=e2.shape[-2:], mode="bilinear", align_corners=False)
-        d2 = torch.cat([d2, e2], dim=1)
-        d2 = self.dec2(d2)
-
-        d1 = self.up1(d2)
-        if d1.shape[-2:] != e1.shape[-2:]:
-            d1 = F.interpolate(d1, size=e1.shape[-2:], mode="bilinear", align_corners=False)
-        d1 = torch.cat([d1, e1], dim=1)
-        d1 = self.dec1(d1)
-
-        d0 = self.up0(d1)
-        if d0.shape[-2:] != e0.shape[-2:]:
-            d0 = F.interpolate(d0, size=e0.shape[-2:], mode="bilinear", align_corners=False)
-        d0 = torch.cat([d0, e0], dim=1)
-        d0 = self.dec0(d0)
-
-        out = self.exit(d0)
-        return x + out  # residual
 
 # -----------------------
 #  Utilities
@@ -178,13 +65,40 @@ class UNetRestorer(nn.Module):
 
 _VALID_EXTS = (".pt", ".pth", ".ckpt", ".safetensors")
 
+
+def _norm_name(name: Optional[str]) -> str:
+    return name.lower() if isinstance(name, str) else ""
+
+
+def _lookup_model_spec(name: Optional[str]) -> Optional[_ModelSpec]:
+    norm = _norm_name(name)
+    if not norm:
+        return None
+    for key, spec in _KNOWN_MODEL_SPECS.items():
+        if key.lower() == norm:
+            return spec
+    return None
+
+
+def _resolve_model_spec(weights_name: str, weights_path: str, user_base_ch: int) -> _ModelSpec:
+    spec = _lookup_model_spec(weights_name)
+    if spec is None and weights_path:
+        spec = _lookup_model_spec(os.path.basename(weights_path))
+    if spec is not None:
+        return spec
+
+    ref = _norm_name(weights_name or os.path.basename(weights_path or ""))
+    if "v2" in ref or "naf" in ref:
+        return _ModelSpec("nafnet_v2", user_base_ch, None)
+    return _ModelSpec("legacy_v1", user_base_ch, None)
+
+
 def make_hann_window(tile: int, device: torch.device):
     w = torch.hann_window(tile, device=device, periodic=False)
     eps = 1e-3
     w = eps + (1.0 - eps) * w
     w2d = torch.outer(w, w)
     return w2d
-
 
 
 def _make_edge_aware_window(tile: int, overlap: int, x0: int, x1: int, y0: int, y1: int, W: int, H: int, device, eps: float = 1e-3):
@@ -243,14 +157,14 @@ def _list_artifact_models_local() -> List[str]:
 def _tile_process(img_chw: torch.Tensor, model: nn.Module, tile: int, overlap: int, amp_dtype, edge_aware_window: bool):
     device = next(model.parameters()).device
     C, H, W = img_chw.shape
-    amp_enabled = (amp_dtype is not None) and (device.type == 'cuda')
+    amp_enabled = (amp_dtype is not None) and (device.type == "cuda")
 
     if tile <= 0:
-        with torch.amp.autocast(device_type='cuda', dtype=amp_dtype if amp_enabled else torch.float16, enabled=amp_enabled):
+        with torch.amp.autocast(device_type="cuda", dtype=amp_dtype if amp_enabled else torch.float16, enabled=amp_enabled):
             out = model(img_chw.unsqueeze(0).to(device, memory_format=torch.channels_last))
         return out.squeeze(0).cpu()
 
-    stride = tile - overlap
+    stride = max(1, tile - overlap)
     out = torch.zeros(1, C, H, W, device=device)
     weight = torch.zeros_like(out)
 
@@ -267,7 +181,7 @@ def _tile_process(img_chw: torch.Tensor, model: nn.Module, tile: int, overlap: i
             x0 = max(0, x1 - tile)
 
             patch = img_chw[:, y0:y1, x0:x1].unsqueeze(0).to(device, memory_format=torch.channels_last)
-            with torch.amp.autocast(device_type='cuda', dtype=amp_dtype if amp_enabled else torch.float16, enabled=amp_enabled):
+            with torch.amp.autocast(device_type="cuda", dtype=amp_dtype if amp_enabled else torch.float16, enabled=amp_enabled):
                 pred = model(patch)
 
             th, tw = (y1 - y0), (x1 - x0)
@@ -282,8 +196,8 @@ def _tile_process(img_chw: torch.Tensor, model: nn.Module, tile: int, overlap: i
             else:
                 w = win[:, :, :use_h, :use_w]
 
-            out[:, :, y0:y0+use_h, x0:x0+use_w] += pred * w
-            weight[:, :, y0:y0+use_h, x0:x0+use_w] += w
+            out[:, :, y0:y0 + use_h, x0:x0 + use_w] += pred * w
+            weight[:, :, y0:y0 + use_h, x0:x0 + use_w] += w
 
     out = out / weight.clamp(min=1e-8)
     return out.squeeze(0).cpu()
@@ -293,10 +207,13 @@ def _tile_process(img_chw: torch.Tensor, model: nn.Module, tile: int, overlap: i
 #  Model cache/loader
 # -----------------------
 
-_MODEL_CACHE: Dict[Tuple[str, int, str], nn.Module] = {}
+_MODEL_CACHE: Dict[Tuple[str, int, str, str], nn.Module] = {}
 
-def _resolve_amp_dtype(mode: str):
-    mode = mode.lower()
+
+def _resolve_amp_dtype(mode: str, preferred_amp: Optional[str] = None):
+    mode_in = (mode or "auto").lower()
+    pref = preferred_amp.lower() if isinstance(preferred_amp, str) else None
+    mode = pref if mode_in == "auto" and pref in ("bf16", "fp16", "auto") else mode_in
     if mode == "none":
         return None
     if not torch.cuda.is_available():
@@ -304,8 +221,16 @@ def _resolve_amp_dtype(mode: str):
     if mode == "auto":
         return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     if mode == "bf16":
-        return torch.bfloat16
+        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     return torch.float16  # "fp16"
+
+
+def _build_model(arch: str, base_ch: int) -> nn.Module:
+    if arch == "nafnet_v2":
+        return NAFNetRestorer(in_ch=3, out_ch=3, base_ch=base_ch)
+    if arch == "legacy_v1":
+        return LegacyUNetRestorer(in_ch=3, out_ch=3, base_ch=base_ch)
+    raise ValueError(f"Unknown architecture '{arch}'")
 
 
 def _load_checkpoint_any(path: str):
@@ -318,17 +243,15 @@ def _load_checkpoint_any(path: str):
     return torch.load(path, map_location="cpu", weights_only=False)
 
 
-def _load_model(weights_path: str, base_ch: int, device: torch.device) -> nn.Module:
-    key = (weights_path, base_ch, str(device))
+def _load_model(weights_path: str, arch: str, base_ch: int, device: torch.device) -> nn.Module:
+    key = (weights_path, base_ch, str(device), arch)
     m = _MODEL_CACHE.get(key)
     if m is not None:
         return m
-    model = UNetRestorer(in_ch=3, out_ch=3, base_ch=base_ch)
+    model = _build_model(arch, base_ch)
     ckpt = _load_checkpoint_any(weights_path)
-    if isinstance(ckpt, dict) and "model" in ckpt:
-        model.load_state_dict(ckpt["model"], strict=True)
-    else:
-        model.load_state_dict(ckpt, strict=True)
+    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+    model.load_state_dict(state, strict=True)
     model.to(device)
     model.eval()
     model = model.to(memory_format=torch.channels_last)
@@ -344,11 +267,14 @@ class SnJakeArtifactsRemover:
     @classmethod
     def INPUT_TYPES(cls):
         models_dir = _resolve_models_dir()
-        
 
         local_names = _list_artifact_models_local()
-        remote_names = list(_HF_DEFAULT_WEIGHT_CANDIDATES)
-        
+
+        remote_names: List[str] = list(_HF_DEFAULT_WEIGHT_CANDIDATES)
+        for known in _KNOWN_MODEL_SPECS.keys():
+            if known not in remote_names:
+                remote_names.append(known)
+
         combined_names = set(remote_names)
         if local_names and local_names[0] != "<none found>":
             combined_names.update(local_names)
@@ -356,8 +282,8 @@ class SnJakeArtifactsRemover:
         names = sorted(list(combined_names))
         if not names:
             names = ["<none found>"]
-        
-        default_name = _HF_DEFAULT_WEIGHT_CANDIDATES[0] if _HF_DEFAULT_WEIGHT_CANDIDATES[0] in names else names[0]
+
+        default_name = next((n for n in _HF_DEFAULT_WEIGHT_CANDIDATES if n in names), names[0])
         default_path = os.path.join(models_dir, default_name) if default_name not in ("<none found>",) else ""
 
         return {
@@ -378,18 +304,16 @@ class SnJakeArtifactsRemover:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
     FUNCTION = "apply"
-    CATEGORY = "😎 SnJake/JPG & Noise Remover"
+    CATEGORY = "SnJake/JPG & Noise Remover"
 
     def _resolve_weights(self, weights_name: str, weights_path: str) -> str:
         root = _resolve_models_dir()
 
-        # Приоритет 1: Имя из выпадающего списка
         if weights_name and weights_name not in ("<none found>",):
             model_path = os.path.join(root, weights_name)
 
-            # Если выбранная модель не найдена локально, скачиваем её
             if not os.path.isfile(model_path):
-                print(f"[SnJakeArtifactsRemover] Model '{weights_name}' not found. Trying to download from Hugging Face...")
+                print(f"[SnJakeArtifactsRemover] Model '{weights_name}' not found locally. Trying to download from Hugging Face...")
                 if hf_hub_download is None:
                     raise ImportError("huggingface_hub is not installed. Please install it to download models automatically: pip install huggingface_hub")
                 try:
@@ -401,29 +325,30 @@ class SnJakeArtifactsRemover:
                     )
                     print(f"[SnJakeArtifactsRemover] Download complete: {weights_name}")
                 except Exception as e:
-                    raise FileNotFoundError(f"Failed to download '{weights_name}' с Hugging Face. Error: {e}")
-            
-            # Теперь файл должен существовать
+                    raise FileNotFoundError(f"Failed to download '{weights_name}' from Hugging Face. Error: {e}")
+
             if os.path.isfile(model_path):
                 return model_path
 
-        # Приоритет 2: Путь, указанный вручную, если список не сработал
         if weights_path and os.path.isfile(weights_path):
             return weights_path
 
-        # Ошибка, если ничего не найдено
         raise FileNotFoundError(f"Model weights not found. Name checked='{weights_name}' and path='{weights_path}'")
-    
+
     def apply(self, image, weights_name, weights_path, base_ch, tile, overlap, edge_aware_window, blend, amp_dtype, device):
         if device == "auto":
             device_t = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             device_t = torch.device(device)
 
-        amp = _resolve_amp_dtype(amp_dtype)
-
         wp = self._resolve_weights(weights_name, weights_path)
-        model = _load_model(wp, base_ch, device_t)
+        spec = _resolve_model_spec(weights_name, wp, base_ch)
+        amp = _resolve_amp_dtype(amp_dtype, preferred_amp=spec.preferred_amp)
+
+        if spec.base_ch != base_ch:
+            print(f"[SnJakeArtifactsRemover] Using base_ch={spec.base_ch} required by '{weights_name}' instead of input={base_ch}.")
+
+        model = _load_model(wp, spec.arch, spec.base_ch, device_t)
 
         b, h, w, c = image.shape
         if c != 3:
@@ -445,4 +370,3 @@ class SnJakeArtifactsRemover:
         result = result.clamp(0, 1).to(image.dtype)
 
         return (result,)
-
