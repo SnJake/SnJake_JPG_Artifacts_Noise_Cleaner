@@ -67,7 +67,7 @@ The installation consists of two steps: installing the node itself and downloadi
 
 1.  Navigate to your `ComfyUI/models/` directory.
 2.  Create a folder named `artifacts_remover` inside it, if it doesn't already exist.
-3.  Download the v2 model weights file (`.pt` or `.safetensors`) from the **[Hugging Face page](https://huggingface.co/SnJake/JPG_Noise_Remover)**.
+3.  Download the v1 or v2 model weights file (`.pt` or `.safetensors`) from the **[Hugging Face page](https://huggingface.co/SnJake/JPG_Noise_Remover)**.
 4.  Place the downloaded weights file into the `ComfyUI/models/artifacts_remover/` directory.
 
 ### Step 3: Restart
