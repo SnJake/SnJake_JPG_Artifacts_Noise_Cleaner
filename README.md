@@ -1,4 +1,4 @@
-# JPG & Noise Remover for ComfyUI
+<img width="2412" height="965" alt="3_Ready" src="https://github.com/user-attachments/assets/3fa1f2a6-0a3a-488e-bbfe-4c98035c5330" /># JPG & Noise Remover for ComfyUI
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)
@@ -20,8 +20,10 @@ The project has been updated to **Version 2**.
 
 # Examples
 
+<img width="790" height="234" alt="1_Ready" src="https://github.com/user-attachments/assets/20aeb426-5b85-496a-af39-46bdff7192bc" />
+<img width="2702" height="1211" alt="2_Ready" src="https://github.com/user-attachments/assets/a114186f-cd50-431b-9d7c-f0ccd62fec37" />
+<img width="2412" height="965" alt="3_Ready" src="https://github.com/user-attachments/assets/01c17f89-3fff-49aa-8b76-016b9f3de9fe" />
 
-<Placeholder>
 
 ---
 
