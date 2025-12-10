@@ -298,6 +298,8 @@ class SnJakeArtifactsRemover:
                 "blend": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "amp_dtype": (["auto", "bf16", "fp16", "none"], {"default": "auto"}),
                 "device": (["auto", "cuda", "cpu"], {"default": "auto"}),
+                "force_process": ("BOOLEAN", {"default": False}),
+                "force_noise_std": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 0.1, "step": 0.001}),
             },
         }
 
@@ -335,7 +337,7 @@ class SnJakeArtifactsRemover:
 
         raise FileNotFoundError(f"Model weights not found. Name checked='{weights_name}' and path='{weights_path}'")
 
-    def apply(self, image, weights_name, weights_path, base_ch, tile, overlap, edge_aware_window, blend, amp_dtype, device):
+    def apply(self, image, weights_name, weights_path, base_ch, tile, overlap, edge_aware_window, blend, amp_dtype, device, force_process, force_noise_std):
         if device == "auto":
             device_t = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
@@ -357,7 +359,14 @@ class SnJakeArtifactsRemover:
         out_list = []
         for i in range(b):
             img = image[i].permute(2, 0, 1).contiguous()  # CHW
-            out_chw = _tile_process(img, model, int(tile), int(overlap), amp, edge_aware_window)
+
+            if force_process and force_noise_std > 0.0:
+                noise = torch.randn_like(img) * float(force_noise_std)
+                proc_img = (img + noise).clamp(0, 1)
+            else:
+                proc_img = img
+
+            out_chw = _tile_process(proc_img, model, int(tile), int(overlap), amp, edge_aware_window)
 
             if blend > 0:
                 b_blend = max(0.0, min(1.0, blend))
