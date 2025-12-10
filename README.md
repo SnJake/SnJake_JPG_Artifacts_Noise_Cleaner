@@ -13,6 +13,7 @@ The project has been updated to **Version 2**.
 - **Smarter Training:** Now handles slight blur and uses Perceptual Loss (VGG) to keep textures sharp.
 
 > **Which version to use?** V2 usually gives sharper, cleaner outputs, but it also learned to leave images untouched when they already look clean. If you feel it is too conservative on a specific picture, try V1 (best_ema_15E) and pick the result you prefer.
+
 > **Force processing:** If V2 skips a frame because it thinks it is clean, enable `force_process` and increase `force_noise_std` (default now 0.02; 0.05 works for most stubborn cases). This adds tiny noise so the model always runs; final output is still blended with the original.
 ---
 
