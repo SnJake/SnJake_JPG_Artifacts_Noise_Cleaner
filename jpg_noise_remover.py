@@ -306,7 +306,7 @@ class SnJakeArtifactsRemover:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
     FUNCTION = "apply"
-    CATEGORY = "SnJake/JPG & Noise Remover"
+    CATEGORY = "😎 SnJake/JPG & Noise Remover"
 
     def _resolve_weights(self, weights_name: str, weights_path: str) -> str:
         root = _resolve_models_dir()
@@ -379,3 +379,4 @@ class SnJakeArtifactsRemover:
         result = result.clamp(0, 1).to(image.dtype)
 
         return (result,)
+
